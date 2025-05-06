@@ -37,7 +37,7 @@ export default function SpreadPage() {
 
       const data = await res.json();
       setResponse(data.reply);
-    } catch (err) {
+    } catch {
       setResponse('⚠️ Something went wrong.');
     } finally {
       setLoading(false);
