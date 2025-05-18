@@ -1,29 +1,25 @@
 // app/api/sophia-natal-chart/route.ts
-import { NextRequest, NextResponse } from 'next/server'; // NextResponse is often preferred for responses
+import { NextRequest, NextResponse } from 'next/server';
 
+// Interface for the expected POST payload
+interface NatalChartPayload {
+  ascendant: { sign: string; degree: number; formatted: string };
+  midheaven: { sign: string; degree: number; formatted: string };
+  planets: Array<{
+    name: string;
+    sign: string;
+    degree: number;
+    house?: number;
+    isRetrograde?: boolean;
+    formatted: string;
+  }>;
+}
+
+// Your existing POST function - THIS REMAINS THE SAME
 export async function POST(req: NextRequest) {
   try {
-    // --- 1. Define Expected Input Data Structure ---
-    // We expect data like: { ascendant: {...}, midheaven: {...}, planets: [...] }
-    // Let's define an interface for better type safety (optional but good practice)
-    interface NatalChartPayload {
-      ascendant: { sign: string; degree: number; formatted: string };
-      midheaven: { sign: string; degree: number; formatted: string };
-      planets: Array<{
-        name: string;
-        sign: string;
-        degree: number;
-        house?: number; // House might be optional if not always calculated/sent
-        isRetrograde?: boolean;
-        formatted: string;
-      }>;
-      // You could add other fields like user_query_about_chart if needed
-    }
+    const chartData = (await req.json()) as NatalChartPayload;
 
-    // --- 2. Parse Incoming Natal Chart Data ---
-    const chartData = (await req.json()) as NatalChartPayload; // Type assertion
-    
-    // Basic validation (you can add more robust validation)
     if (!chartData || !chartData.ascendant || !chartData.planets) {
       return NextResponse.json(
         { reply: 'Invalid natal chart data received.' },
@@ -32,34 +28,24 @@ export async function POST(req: NextRequest) {
     }
 
     const apiKey = process.env.OPENAI_API_KEY;
-
     if (!apiKey) {
+      console.error('OPENAI_API_KEY not found in environment variables.'); // Added server-side log
       return NextResponse.json(
-        { reply: 'API key missing.' },
+        { reply: 'API key missing on server.' }, // Clarified error for client
         { status: 500 }
       );
     }
 
-    // --- 3. Construct the Prompt for OpenAI ---
-    // This is where we'll build the detailed prompt for Sophia
     let userPromptContent = `Please provide a mystical and insightful natal chart interpretation. Here are the details:\n`;
     userPromptContent += `Ascendant: ${chartData.ascendant.formatted}.\n`;
     userPromptContent += `Midheaven: ${chartData.midheaven.formatted}.\n\n`;
     userPromptContent += `Planetary Placements:\n`;
-
     chartData.planets.forEach(planet => {
       userPromptContent += `- ${planet.name} is at ${planet.formatted}`;
-      if (planet.house) {
-        userPromptContent += ` in House ${planet.house}`;
-      }
-      if (planet.isRetrograde) {
-        userPromptContent += ` (Retrograde)`;
-      }
+      if (planet.house) userPromptContent += ` in House ${planet.house}`;
+      if (planet.isRetrograde) userPromptContent += ` (Retrograde)`;
       userPromptContent += `.\n`;
     });
-    
-    // You can add more sections to the prompt here, e.g., if you send aspects, or signs on house cusps.
-    // userPromptContent += "\nConsider the overall themes and energies present in this chart."
 
     const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -68,58 +54,61 @@ export async function POST(req: NextRequest) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'gpt-3.5-turbo', // Or gpt-4 if you have access and prefer it
+        model: 'gpt-3.5-turbo',
         messages: [
           {
             role: 'system',
-            // ✅ MODIFIED System Prompt for Natal Charts
             content: `You are Sophia, the Oracle Unbound — a mystical voice who offers poetic, symbolic, and insightful natal chart interpretations. Focus on key themes, strengths, potential challenges, and the soul's journey as revealed by the stars. Always maintain an encouraging and empowering tone.`
           },
           {
             role: 'user',
-            content: userPromptContent // ✅ Our dynamically generated prompt
+            content: userPromptContent
           }
         ],
-        // temperature: 0.7, // Optional: Adjust creativity. 0.7 is a common default.
-        // max_tokens: 500,  // Optional: Limit response length if needed
       }),
     });
 
     if (!openaiRes.ok) {
       const errText = await openaiRes.text();
-      console.error('OpenAI Error:', openaiRes.status, errText);
+      console.error('OpenAI API Error:', openaiRes.status, errText);
       return NextResponse.json(
-        { reply: `OpenAI API error: ${openaiRes.status}. Please check server logs.` },
-        { status: openaiRes.status } // Return OpenAI's status code
+        { reply: `OpenAI API error: ${openaiRes.status}. Details: ${errText.substring(0, 200)}` }, // Send some details back
+        { status: openaiRes.status }
       );
     }
 
     const data = await openaiRes.json();
-    
-    // Check if choices array exists and has content
     if (!data.choices || data.choices.length === 0 || !data.choices[0].message || !data.choices[0].message.content) {
-        console.error('OpenAI Error: Invalid response structure', data);
-        return NextResponse.json(
-            { reply: 'OpenAI returned an invalid response structure.' },
-            { status: 500 }
-        );
+      console.error('OpenAI Error: Invalid response structure from OpenAI', data);
+      return NextResponse.json(
+        { reply: 'OpenAI returned an invalid response structure.' },
+        { status: 500 }
+      );
     }
     
     const finalReply = data.choices[0].message.content.trim();
+    return NextResponse.json({ reply: finalReply });
 
-    return NextResponse.json({ reply: finalReply }); // Using NextResponse for consistency
-
-  } catch (err: any) { // Type the error for better handling
-    console.error('Natal Chart API Route Error:', err);
-    let errorMessage = 'Internal server error.';
-    if (err instanceof SyntaxError) { // Specifically catch JSON parsing errors
-        errorMessage = 'Invalid JSON payload received.';
-        return NextResponse.json({ reply: errorMessage }, { status: 400 });
+  } catch (err: any) {
+    console.error('Natal Chart API POST Route Error:', err.message, err.stack);
+    let errorMessage = 'Internal server error processing your chart.';
+    let errorStatus = 500;
+    if (err.message.includes('Unexpected token') || err instanceof SyntaxError) { // More specific check for JSON parse error
+        errorMessage = 'Invalid JSON payload received by server.';
+        errorStatus = 400;
     }
-    // You could add more specific error handling here
     return NextResponse.json(
-        { reply: errorMessage, detail: err.message || 'Unknown error' }, 
-        { status: 500 }
+        { reply: errorMessage, detail: err.message || 'Unknown server error' }, 
+        { status: errorStatus }
     );
   }
+}
+
+// ✅ ADD THIS TEMPORARY GET HANDLER FOR DIAGNOSTICS
+export async function GET(req: NextRequest) {
+  console.log("GET request received for /api/sophia-natal-chart"); // Server-side log
+  return NextResponse.json({ 
+    message: "Hello from Sophia Natal Chart GET endpoint! This route file is active.",
+    timestamp: new Date().toISOString() 
+  });
 }
